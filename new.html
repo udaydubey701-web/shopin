@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShopVault</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <script src="/_sdk/data_sdk.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=Playfair+Display:wght@600;700&amp;display=swap" rel="stylesheet">
+  <style>
+html,body{height:100%;margin:0;padding:0}
+*{box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif}
+.font-display{font-family:'Playfair Display',serif}
+.fade-in{animation:fadeIn .4s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.slide-in{animation:slideIn .3s ease}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+.toast-anim{animation:toastIn .3s ease,toastOut .3s ease 2.7s}
+@keyframes toastIn{from{opacity:0;transform:translateY(-20px)}to{opacity:1;transform:translateY(0)}}
+@keyframes toastOut{to{opacity:0;transform:translateY(-20px)}}
+.card-hover{transition:all .3s ease}
+.card-hover:hover{transform:translateY(-4px);box-shadow:0 12px 24px rgba(0,0,0,.1)}
+input:focus,textarea:focus,select:focus{outline:none;ring:2px}
+.btn-primary{transition:all .2s ease}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+</style>
+  <style>body { box-sizing: border-box; }</style>
+ </head>
+ <body class="h-full">
+  <div id="app" class="h-full w-full overflow-auto" style="background:#f8f7f4"><!-- Toast -->
+   <div id="toast" class="fixed top-4 right-4 z-[999] hidden"></div><!-- All pages rendered here -->
+   <div id="page-content" class="h-full w-full"></div>
+  </div>
+  <script>
+// ============ STATE ============
+let allData = [];
+let currentUser = null;
+let currentPage = 'landing';
+let cart = [];
+let selectedProduct = null;
+let adminUser = null;
+
+const defaultConfig = {
+  store_name: 'ShopVault',
+  store_tagline: 'Premium goods, delivered with care.',
+  hero_heading: 'Discover What You Love',
+  hero_subtext: 'Curated collections of premium products at prices that make sense.',
+  background_color: '#f8f7f4',
+  surface_color: '#ffffff',
+  text_color: '#1a1a1a',
+  primary_action: '#c45e3a',
+  secondary_action: '#6b7280',
+  font_family: 'DM Sans',
+  font_size: 16
+};
+
+// ============ HELPERS ============
+function getUsers(){ return allData.filter(d=>d.type==='user'); }
+function getProducts(){ return allData.filter(d=>d.type==='product'); }
+function getOrders(){ return allData.filter(d=>d.type==='order'); }
+function getCartItems(){ return allData.filter(d=>d.type==='cart' && d.user_email===currentUser?.email); }
+function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+function showToast(msg, type='success'){
+  const t=document.getElementById('toast');
+  const bg=type==='success'?config.primary_action:'#ef4444';
+  t.innerHTML=`<div class="toast-anim px-5 py-3 rounded-xl text-white text-sm font-medium shadow-lg" style="background:${bg}">${msg}</div>`;
+  t.classList.remove('hidden');
+  setTimeout(()=>t.classList.add('hidden'),3000);
+}
+
+function getConfig(key){ return config[key]||defaultConfig[key]; }
+
+// product emoji images
+const productEmojis = ['🎧','👟','⌚','📱','💻','🎒','👓','🧴','📷','🎮','🖥️','🧢','👜','🪴','☕'];
+function getEmoji(name){
+  let h=0;for(let i=0;i<(name||'').length;i++)h=((h<<5)-h)+name.charCodeAt(i);
+  return productEmojis[Math.abs(h)%productEmojis.length];
+}
+
+let config = {...defaultConfig};
+
+// ============ DATA SDK ============
+const dataHandler = {
+  onDataChanged(data){
+    allData = data;
+    // refresh current cart count
+    if(currentUser){
+      cart = allData.filter(d=>d.type==='cart'&&d.user_email===currentUser.email);
+    }
+    renderCurrentPage();
+  }
+};
+
+(async()=>{
+  // Element SDK
+  window.elementSdk.init({
+    defaultConfig,
+    async onConfigChange(c){
+      config = c;
+      document.getElementById('app').style.background = getConfig('background_color');
+      document.body.style.fontFamily = `${getConfig('font_family')}, DM Sans, sans-serif`;
+      renderCurrentPage();
+    },
+    mapToCapabilities(c){
+      const mk=(key)=>({
+        get:()=>c[key]||defaultConfig[key],
+        set:(v)=>{c[key]=v;window.elementSdk.setConfig({[key]:v})}
+      });
+      return {
+        recolorables:[mk('background_color'),mk('surface_color'),mk('text_color'),mk('primary_action'),mk('secondary_action')],
+        borderables:[],
+        fontEditable:mk('font_family'),
+        fontSizeable:mk('font_size')
+      };
+    },
+    mapToEditPanelValues(c){
+      return new Map([
+        ['store_name',c.store_name||defaultConfig.store_name],
+        ['store_tagline',c.store_tagline||defaultConfig.store_tagline],
+        ['hero_heading',c.hero_heading||defaultConfig.hero_heading],
+        ['hero_subtext',c.hero_subtext||defaultConfig.hero_subtext]
+      ]);
+    }
+  });
+
+  const initR = await window.dataSdk.init(dataHandler);
+  if(!initR.isOk) console.error('Data SDK init failed');
+})();
+
+// ============ NAVIGATION ============
+function navigate(page, data){
+  if(data) {
+    if(data.product) selectedProduct=data.product;
+  }
+  currentPage=page;
+  renderCurrentPage();
+}
+
+function renderCurrentPage(){
+  const el=document.getElementById('page-content');
+  if(!el)return;
+  const bs=getConfig('font_size');
+  el.style.fontSize=bs+'px';
+
+  switch(currentPage){
+    case 'landing': el.innerHTML=renderLanding(); break;
+    case 'register': el.innerHTML=renderRegister(); break;
+    case 'login': el.innerHTML=renderLogin(); break;
+    case 'dashboard': el.innerHTML=renderDashboard(); break;
+    case 'product': el.innerHTML=renderProduct(); break;
+    case 'cart': el.innerHTML=renderCart(); break;
+    case 'checkout': el.innerHTML=renderCheckout(); break;
+    case 'orders': el.innerHTML=renderOrders(); break;
+    case 'admin-login': el.innerHTML=renderAdminLogin(); break;
+    case 'admin-dashboard': el.innerHTML=renderAdminDashboard(); break;
+    case 'admin-add': el.innerHTML=renderAdminAdd(); break;
+    case 'admin-orders': el.innerHTML=renderAdminOrders(); break;
+    case 'admin-customers': el.innerHTML=renderAdminCustomers(); break;
+    default: el.innerHTML=renderLanding();
+  }
+  lucide.createIcons();
+}
+
+// ============ SHARED COMPONENTS ============
+function userNav(){
+  const cartCount = cart.length;
+  const bg=getConfig('surface_color'), txt=getConfig('text_color'), acc=getConfig('primary_action');
+  return `<nav class="sticky top-0 z-50 border-b" style="background:${bg};border-color:${acc}22">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="font-display font-bold cursor-pointer" style="font-size:${getConfig('font_size')*1.5}px;color:${acc}" onclick="navigate('dashboard')">${getConfig('store_name')}</div>
+      <div class="flex items-center gap-3">
+        <button onclick="navigate('dashboard')" class="px-3 py-1.5 rounded-lg text-sm font-medium hover:opacity-80" style="color:${txt}"><i data-lucide="home" class="inline w-4 h-4 mr-1"></i>Shop</button>
+        <button onclick="navigate('orders')" class="px-3 py-1.5 rounded-lg text-sm font-medium hover:opacity-80" style="color:${txt}"><i data-lucide="package" class="inline w-4 h-4 mr-1"></i>Orders</button>
+        <button onclick="navigate('cart')" class="relative px-3 py-1.5 rounded-lg text-sm font-medium hover:opacity-80" style="color:${txt}">
+          <i data-lucide="shopping-cart" class="inline w-4 h-4 mr-1"></i>Cart
+          ${cartCount>0?`<span class="absolute -top-1 -right-1 w-5 h-5 rounded-full text-white text-xs flex items-center justify-center" style="background:${acc}">${cartCount}</span>`:''}
+        </button>
+        <button onclick="logoutUser()" class="px-3 py-1.5 rounded-lg text-sm font-medium hover:opacity-80" style="color:${getConfig('secondary_action')}"><i data-lucide="log-out" class="inline w-4 h-4 mr-1"></i>Logout</button>
+      </div>
+    </div>
+  </nav>`;
+}
+
+function adminNav(){
+  const bg=getConfig('text_color'), acc=getConfig('primary_action');
+  return `<nav class="sticky top-0 z-50" style="background:${bg}">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="font-display font-bold text-white cursor-pointer" style="font-size:${getConfig('font_size')*1.3}px" onclick="navigate('admin-dashboard')"><i data-lucide="shield" class="inline w-5 h-5 mr-2" style="color:${acc}"></i>Admin Panel</div>
+      <div class="flex items-center gap-3">
+        <button onclick="navigate('admin-dashboard')" class="px-3 py-1.5 rounded-lg text-sm font-medium text-gray-300 hover:text-white">Dashboard</button>
+        <button onclick="navigate('admin-add')" class="px-3 py-1.5 rounded-lg text-sm font-medium text-gray-300 hover:text-white">Add Product</button>
+        <button onclick="navigate('admin-orders')" class="px-3 py-1.5 rounded-lg text-sm font-medium text-gray-300 hover:text-white">Orders</button>
+        <button onclick="navigate('admin-customers')" class="px-3 py-1.5 rounded-lg text-sm font-medium text-gray-300 hover:text-white">Customers</button>
+        <button onclick="logoutAdmin()" class="px-3 py-1.5 rounded-lg text-sm font-medium" style="color:${acc}"><i data-lucide="log-out" class="inline w-4 h-4 mr-1"></i>Logout</button>
+      </div>
+    </div>
+  </nav>`;
+}
+
+// ============ LANDING ============
+function renderLanding(){
+  const bg=getConfig('background_color'),sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action');
+  const bs=getConfig('font_size');
+  return `<div class="h-full flex flex-col fade-in" style="background:${bg}">
+    <nav class="px-6 py-4 flex items-center justify-between" style="background:${sf}">
+      <div class="font-display font-bold" style="font-size:${bs*1.6}px;color:${acc}">${getConfig('store_name')}</div>
+      <div class="flex gap-3">
+        <button onclick="navigate('login')" class="px-5 py-2 rounded-full text-sm font-semibold border-2 btn-primary" style="color:${acc};border-color:${acc}">Sign In</button>
+        <button onclick="navigate('register')" class="px-5 py-2 rounded-full text-sm font-semibold text-white btn-primary" style="background:${acc}">Get Started</button>
+        <button onclick="navigate('admin-login')" class="px-4 py-2 rounded-full text-sm font-medium" style="color:${sec}"><i data-lucide="shield" class="inline w-4 h-4 mr-1"></i>Admin</button>
+      </div>
+    </nav>
+    <div class="flex-1 flex items-center justify-center px-6">
+      <div class="text-center max-w-2xl">
+        <div class="mb-4" style="font-size:${bs*3.5}px;line-height:1.1">
+          <span class="font-display font-bold" style="color:${txt}">${getConfig('hero_heading').split(' ').slice(0,-1).join(' ')} </span>
+          <span class="font-display font-bold" style="color:${acc}">${getConfig('hero_heading').split(' ').slice(-1)}</span>
+        </div>
+        <p class="mb-8" style="font-size:${bs*1.15}px;color:${sec}">${getConfig('hero_subtext')}</p>
+        <div class="flex gap-4 justify-center">
+          <button onclick="navigate('register')" class="px-8 py-3 rounded-full font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Start Shopping <i data-lucide="arrow-right" class="inline w-4 h-4 ml-1"></i></button>
+        </div>
+        <div class="mt-12 flex justify-center gap-8" style="color:${sec};font-size:${bs*.85}px">
+          <div class="flex items-center gap-2"><i data-lucide="truck" class="w-5 h-5" style="color:${acc}"></i>Free Shipping</div>
+          <div class="flex items-center gap-2"><i data-lucide="shield-check" class="w-5 h-5" style="color:${acc}"></i>Secure Payment</div>
+          <div class="flex items-center gap-2"><i data-lucide="refresh-cw" class="w-5 h-5" style="color:${acc}"></i>Easy Returns</div>
+        </div>
+      </div>
+    </div>
+    <div class="text-center py-4" style="color:${sec};font-size:${bs*.75}px">${getConfig('store_tagline')}</div>
+  </div>`;
+}
+
+// ============ REGISTER ============
+function renderRegister(){
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+  return `<div class="h-full flex items-center justify-center px-4 fade-in" style="background:${getConfig('background_color')}">
+    <div class="w-full max-w-md p-8 rounded-2xl shadow-lg" style="background:${sf}">
+      <div class="text-center mb-6">
+        <div class="font-display font-bold mb-1" style="font-size:${bs*1.8}px;color:${acc}">${getConfig('store_name')}</div>
+        <p style="color:${sec};font-size:${bs*.9}px">Create your account</p>
+      </div>
+      <form onsubmit="handleRegister(event)">
+        <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="reg-name">Full Name</label>
+        <input id="reg-name" type="text" required class="w-full px-4 py-2.5 rounded-xl border mb-4" style="border-color:${sec}44;font-size:${bs}px" placeholder="John Doe">
+        <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="reg-email">Email</label>
+        <input id="reg-email" type="email" required class="w-full px-4 py-2.5 rounded-xl border mb-4" style="border-color:${sec}44;font-size:${bs}px" placeholder="john@example.com">
+        <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="reg-pass">Create a PIN (4 digits)</label>
+        <input id="reg-pass" type="text" required pattern="[0-9]{4}" maxlength="4" class="w-full px-4 py-2.5 rounded-xl border mb-6" style="border-color:${sec}44;font-size:${bs}px" placeholder="1234">
+        <div id="reg-error" class="text-red-500 text-sm mb-3 hidden"></div>
+        <button type="submit" id="reg-btn" class="w-full py-3 rounded-xl font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Create Account</button>
+      </form>
+      <p class="text-center mt-4" style="color:${sec};font-size:${bs*.85}px">Already have an account? <span class="cursor-pointer font-semibold" style="color:${acc}" onclick="navigate('login')">Sign In</span></p>
+      <p class="text-center mt-2 cursor-pointer" style="color:${sec};font-size:${bs*.8}px" onclick="navigate('landing')">← Back to home</p>
+    </div>
+  </div>`;
+}
+
+async function handleRegister(e){
+  e.preventDefault();
+  const name=document.getElementById('reg-name').value.trim();
+  const email=document.getElementById('reg-email').value.trim().toLowerCase();
+  const pass=document.getElementById('reg-pass').value.trim();
+  const errEl=document.getElementById('reg-error');
+  const btn=document.getElementById('reg-btn');
+
+  if(getUsers().find(u=>u.email===email)){
+    errEl.textContent='Email already registered.';errEl.classList.remove('hidden');return;
+  }
+  if(allData.length>=999){showToast('Storage limit reached','error');return;}
+
+  btn.disabled=true;btn.textContent='Creating...';
+  const r=await window.dataSdk.create({type:'user',name,email,password:pass,role:'user',product_name:'',product_price:0,product_category:'',product_description:'',product_image:'',product_id:'',user_email:'',quantity:0,status:'',order_date:'',address:'',phone:'',total:0,order_id:'',items:''});
+  btn.disabled=false;btn.textContent='Create Account';
+  if(r.isOk){showToast('Account created! Please sign in.');navigate('login');}
+  else{errEl.textContent='Registration failed.';errEl.classList.remove('hidden');}
+}
+
+// ============ LOGIN ============
+function renderLogin(){
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+  return `<div class="h-full flex items-center justify-center px-4 fade-in" style="background:${getConfig('background_color')}">
+    <div class="w-full max-w-md p-8 rounded-2xl shadow-lg" style="background:${sf}">
+      <div class="text-center mb-6">
+        <div class="font-display font-bold mb-1" style="font-size:${bs*1.8}px;color:${acc}">${getConfig('store_name')}</div>
+        <p style="color:${sec};font-size:${bs*.9}px">Welcome back</p>
+      </div>
+      <form onsubmit="handleLogin(event)">
+        <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="login-email">Email</label>
+        <input id="login-email" type="email" required class="w-full px-4 py-2.5 rounded-xl border mb-4" style="border-color:${sec}44;font-size:${bs}px" placeholder="john@example.com">
+        <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="login-pass">PIN</label>
+        <input id="login-pass" type="text" required maxlength="4" class="w-full px-4 py-2.5 rounded-xl border mb-6" style="border-color:${sec}44;font-size:${bs}px" placeholder="1234">
+        <div id="login-error" class="text-red-500 text-sm mb-3 hidden"></div>
+        <button type="submit" id="login-btn" class="w-full py-3 rounded-xl font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Sign In</button>
+      </form>
+      <p class="text-center mt-4" style="color:${sec};font-size:${bs*.85}px">Don't have an account? <span class="cursor-pointer font-semibold" style="color:${acc}" onclick="navigate('register')">Sign Up</span></p>
+      <p class="text-center mt-2 cursor-pointer" style="color:${sec};font-size:${bs*.8}px" onclick="navigate('landing')">← Back to home</p>
+    </div>
+  </div>`;
+}
+
+function handleLogin(e){
+  e.preventDefault();
+  const email=document.getElementById('login-email').value.trim().toLowerCase();
+  const pass=document.getElementById('login-pass').value.trim();
+  const errEl=document.getElementById('login-error');
+  const user=getUsers().find(u=>u.email===email&&u.password===pass);
+  if(!user){errEl.textContent='Invalid email or PIN.';errEl.classList.remove('hidden');return;}
+  currentUser={name:user.name,email:user.email};
+  cart=getCartItems();
+  showToast(`Welcome back, ${user.name}!`);
+  navigate('dashboard');
+}
+
+function logoutUser(){currentUser=null;cart=[];navigate('landing');showToast('Signed out');}
+
+// ============ USER DASHBOARD ============
+function renderDashboard(){
+  const products=getProducts();
+  const bg=getConfig('background_color'),sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+  const categories=['All',...new Set(products.map(p=>p.product_category).filter(Boolean))];
+
+  let cards='';
+  if(products.length===0){
+    cards=`<div class="col-span-full text-center py-16" style="color:${sec}">
+      <i data-lucide="package-open" class="w-16 h-16 mx-auto mb-4 opacity-40"></i>
+      <p style="font-size:${bs*1.2}px" class="font-medium">No products available yet</p>
+      <p style="font-size:${bs*.85}px">Check back soon!</p>
+    </div>`;
+  } else {
+    products.forEach(p=>{
+      cards+=`<div class="rounded-2xl overflow-hidden card-hover cursor-pointer" style="background:${sf}" onclick="navigate('product',{product:allData.find(d=>d.__backendId==='${p.__backendId}')})">
+        <div class="h-44 flex items-center justify-center" style="background:${acc}11;font-size:64px">${getEmoji(p.product_name)}</div>
+        <div class="p-4">
+          <div class="flex items-start justify-between mb-1">
+            <h3 class="font-semibold truncate" style="color:${txt};font-size:${bs}px">${p.product_name}</h3>
+            <span class="font-bold ml-2 whitespace-nowrap" style="color:${acc};font-size:${bs}px">$${Number(p.product_price).toFixed(2)}</span>
+          </div>
+          <span class="inline-block px-2 py-0.5 rounded-full text-xs font-medium" style="background:${acc}15;color:${acc}">${p.product_category||'General'}</span>
+          <p class="mt-2 line-clamp-2" style="color:${sec};font-size:${bs*.8}px">${p.product_description||''}</p>
+        </div>
+      </div>`;
+    });
+  }
+
+  return `<div class="h-full flex flex-col" style="background:${bg}">
+    ${userNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-6xl mx-auto px-4 py-6 fade-in">
+        <div class="mb-6">
+          <h1 class="font-display font-bold mb-1" style="color:${txt};font-size:${bs*1.8}px">Browse Products</h1>
+          <p style="color:${sec};font-size:${bs*.9}px">${products.length} items available</p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          ${cards}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============ PRODUCT PAGE ============
+function renderProduct(){
+  if(!selectedProduct) return renderDashboard();
+  const p=selectedProduct;
+  const bg=getConfig('background_color'),sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+
+  return `<div class="h-full flex flex-col" style="background:${bg}">
+    ${userNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-4xl mx-auto px-4 py-8 fade-in">
+        <button onclick="navigate('dashboard')" class="flex items-center gap-1 mb-6 font-medium" style="color:${sec};font-size:${bs*.9}px"><i data-lucide="arrow-left" class="w-4 h-4"></i> Back to shop</button>
+        <div class="rounded-2xl overflow-hidden shadow-lg grid md:grid-cols-2" style="background:${sf}">
+          <div class="h-72 md:h-auto flex items-center justify-center" style="background:${acc}11;font-size:96px">${getEmoji(p.product_name)}</div>
+          <div class="p-8 flex flex-col justify-center">
+            <span class="inline-block px-3 py-1 rounded-full text-xs font-semibold mb-3 w-fit" style="background:${acc}15;color:${acc}">${p.product_category||'General'}</span>
+            <h1 class="font-display font-bold mb-2" style="color:${txt};font-size:${bs*2}px">${p.product_name}</h1>
+            <p class="mb-6" style="color:${sec};font-size:${bs}px">${p.product_description||'No description available.'}</p>
+            <div class="mb-6 font-bold" style="color:${acc};font-size:${bs*2.2}px">$${Number(p.product_price).toFixed(2)}</div>
+            <button onclick="addToCart('${p.__backendId}')" id="atc-btn" class="w-full py-3 rounded-xl font-semibold text-white btn-primary flex items-center justify-center gap-2" style="background:${acc};font-size:${bs}px">
+              <i data-lucide="shopping-cart" class="w-5 h-5"></i> Add to Cart
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function addToCart(prodId){
+  const btn=document.getElementById('atc-btn');
+  if(!btn)return;
+  if(allData.length>=999){showToast('Storage limit reached','error');return;}
+  const existing=allData.find(d=>d.type==='cart'&&d.user_email===currentUser.email&&d.product_id===prodId);
+  if(existing){
+    btn.disabled=true;btn.innerHTML='Updating...';
+    await window.dataSdk.update({...existing,quantity:(existing.quantity||1)+1});
+    btn.disabled=false;
+  } else {
+    btn.disabled=true;btn.innerHTML='Adding...';
+    const prod=allData.find(d=>d.__backendId===prodId);
+    await window.dataSdk.create({type:'cart',user_email:currentUser.email,product_id:prodId,product_name:prod.product_name,product_price:prod.product_price,quantity:1,name:'',email:'',password:'',role:'',product_category:prod.product_category||'',product_description:'',product_image:'',status:'',order_date:'',address:'',phone:'',total:0,order_id:'',items:''});
+  }
+  btn.disabled=false;btn.innerHTML='<i data-lucide="check" class="w-5 h-5"></i> Added!';
+  showToast('Added to cart!');
+  cart=allData.filter(d=>d.type==='cart'&&d.user_email===currentUser.email);
+  lucide.createIcons();
+  setTimeout(()=>{if(btn){btn.innerHTML='<i data-lucide="shopping-cart" class="w-5 h-5"></i> Add to Cart';lucide.createIcons();}},1500);
+}
+
+// ============ CART ============
+function renderCart(){
+  const items=getCartItems();
+  const bg=getConfig('background_color'),sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+  const total=items.reduce((s,i)=>s+(Number(i.product_price)||0)*(i.quantity||1),0);
+
+  let rows='';
+  if(items.length===0){
+    rows=`<div class="text-center py-16" style="color:${sec}">
+      <i data-lucide="shopping-cart" class="w-16 h-16 mx-auto mb-4 opacity-40"></i>
+      <p style="font-size:${bs*1.2}px" class="font-medium">Your cart is empty</p>
+      <button onclick="navigate('dashboard')" class="mt-4 px-6 py-2 rounded-full font-semibold text-white btn-primary" style="background:${acc}">Start Shopping</button>
+    </div>`;
+  } else {
+    items.forEach(it=>{
+      rows+=`<div class="flex items-center gap-4 p-4 rounded-xl mb-3" style="background:${bg}">
+        <div class="w-16 h-16 rounded-xl flex items-center justify-center flex-shrink-0" style="background:${acc}11;font-size:32px">${getEmoji(it.product_name)}</div>
+        <div class="flex-1 min-w-0">
+          <h3 class="font-semibold truncate" style="color:${txt};font-size:${bs}px">${it.product_name}</h3>
+          <p style="color:${acc};font-size:${bs*.9}px" class="font-bold">$${Number(it.product_price).toFixed(2)}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="updateCartQty('${it.__backendId}',-1)" class="w-8 h-8 rounded-full flex items-center justify-center border" style="border-color:${sec}44;color:${txt}">−</button>
+          <span class="w-8 text-center font-semibold" style="color:${txt}">${it.quantity||1}</span>
+          <button onclick="updateCartQty('${it.__backendId}',1)" class="w-8 h-8 rounded-full flex items-center justify-center border" style="border-color:${sec}44;color:${txt}">+</button>
+        </div>
+        <button onclick="removeCartItem('${it.__backendId}')" class="p-2 rounded-lg hover:opacity-70" style="color:#ef4444"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+      </div>`;
+    });
+  }
+
+  return `<div class="h-full flex flex-col" style="background:${bg}">
+    ${userNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-3xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">Shopping Cart</h1>
+        <div class="rounded-2xl p-6 mb-4" style="background:${sf}">
+          ${rows}
+        </div>
+        ${items.length?`<div class="rounded-2xl p-6 flex items-center justify-between" style="background:${sf}">
+          <div>
+            <p style="color:${sec};font-size:${bs*.85}px">Total (${items.reduce((s,i)=>s+(i.quantity||1),0)} items)</p>
+            <p class="font-bold" style="color:${txt};font-size:${bs*1.8}px">$${total.toFixed(2)}</p>
+          </div>
+          <button onclick="navigate('checkout')" class="px-8 py-3 rounded-xl font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Checkout <i data-lucide="arrow-right" class="inline w-4 h-4 ml-1"></i></button>
+        </div>`:''}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function updateCartQty(id,delta){
+  const item=allData.find(d=>d.__backendId===id);
+  if(!item)return;
+  const nq=(item.quantity||1)+delta;
+  if(nq<=0){await window.dataSdk.delete(item);}
+  else{await window.dataSdk.update({...item,quantity:nq});}
+}
+async function removeCartItem(id){
+  const item=allData.find(d=>d.__backendId===id);
+  if(item)await window.dataSdk.delete(item);
+}
+
+// ============ CHECKOUT ============
+function renderCheckout(){
+  const items=getCartItems();
+  const total=items.reduce((s,i)=>s+(Number(i.product_price)||0)*(i.quantity||1),0);
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+
+  return `<div class="h-full flex flex-col" style="background:${getConfig('background_color')}">
+    ${userNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-2xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">Checkout</h1>
+        <div class="rounded-2xl p-6 mb-4" style="background:${sf}">
+          <h2 class="font-semibold mb-4" style="color:${txt};font-size:${bs*1.1}px">Delivery Details</h2>
+          <form onsubmit="placeOrder(event)">
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="co-name">Full Name</label>
+            <input id="co-name" type="text" required value="${currentUser?.name||''}" class="w-full px-4 py-2.5 rounded-xl border mb-3" style="border-color:${sec}44;font-size:${bs}px">
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="co-phone">Phone</label>
+            <input id="co-phone" type="tel" required class="w-full px-4 py-2.5 rounded-xl border mb-3" style="border-color:${sec}44;font-size:${bs}px" placeholder="+1 234 567 8900">
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="co-addr">Delivery Address</label>
+            <textarea id="co-addr" required rows="3" class="w-full px-4 py-2.5 rounded-xl border mb-4" style="border-color:${sec}44;font-size:${bs}px" placeholder="123 Main Street, City, State"></textarea>
+            <div class="p-4 rounded-xl mb-4" style="background:${getConfig('background_color')}">
+              <div class="flex justify-between mb-1"><span style="color:${sec}">Payment Method</span><span class="font-semibold" style="color:${txt}">💵 Cash on Delivery</span></div>
+              <div class="flex justify-between"><span style="color:${sec}">Total</span><span class="font-bold" style="color:${acc};font-size:${bs*1.3}px">$${total.toFixed(2)}</span></div>
+            </div>
+            <button type="submit" id="order-btn" class="w-full py-3 rounded-xl font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Place Order</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function placeOrder(e){
+  e.preventDefault();
+  const btn=document.getElementById('order-btn');
+  const name=document.getElementById('co-name').value.trim();
+  const phone=document.getElementById('co-phone').value.trim();
+  const addr=document.getElementById('co-addr').value.trim();
+  const items=getCartItems();
+  const total=items.reduce((s,i)=>s+(Number(i.product_price)||0)*(i.quantity||1),0);
+
+  if(allData.length>=999){showToast('Storage limit reached','error');return;}
+  btn.disabled=true;btn.textContent='Placing Order...';
+
+  const orderId='ORD-'+genId().toUpperCase();
+  const itemsSummary=items.map(i=>`${i.product_name} x${i.quantity||1}`).join(', ');
+
+  const r=await window.dataSdk.create({type:'order',order_id:orderId,user_email:currentUser.email,name,phone,address:addr,total,status:'Confirmed',order_date:new Date().toISOString(),items:itemsSummary,email:currentUser.email,password:'',role:'',product_name:'',product_price:0,product_category:'',product_description:'',product_image:'',product_id:'',quantity:0});
+
+  // clear cart
+  for(const ci of items){await window.dataSdk.delete(ci);}
+
+  btn.disabled=false;btn.textContent='Place Order';
+  if(r.isOk){
+    cart=[];
+    showToast(`Order ${orderId} placed successfully! 🎉`);
+    navigate('orders');
+  } else {
+    showToast('Order failed','error');
+  }
+}
+
+// ============ ORDERS ============
+function renderOrders(){
+  const orders=getOrders().filter(o=>o.user_email===currentUser?.email).sort((a,b)=>new Date(b.order_date)-new Date(a.order_date));
+  const bg=getConfig('background_color'),sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+
+  let rows='';
+  if(orders.length===0){
+    rows=`<div class="text-center py-16" style="color:${sec}">
+      <i data-lucide="package" class="w-16 h-16 mx-auto mb-4 opacity-40"></i>
+      <p style="font-size:${bs*1.2}px" class="font-medium">No orders yet</p>
+      <button onclick="navigate('dashboard')" class="mt-4 px-6 py-2 rounded-full font-semibold text-white" style="background:${acc}">Start Shopping</button>
+    </div>`;
+  } else {
+    orders.forEach(o=>{
+      const statusColor=o.status==='Confirmed'?'#22c55e':o.status==='Shipped'?'#3b82f6':acc;
+      rows+=`<div class="p-5 rounded-xl mb-3 slide-in" style="background:${bg}">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-bold" style="color:${txt};font-size:${bs}px">${o.order_id}</span>
+          <span class="px-3 py-1 rounded-full text-xs font-semibold text-white" style="background:${statusColor}">${o.status}</span>
+        </div>
+        <p style="color:${sec};font-size:${bs*.85}px">${o.items}</p>
+        <div class="flex items-center justify-between mt-2">
+          <span style="color:${sec};font-size:${bs*.8}px">${new Date(o.order_date).toLocaleDateString()}</span>
+          <span class="font-bold" style="color:${acc};font-size:${bs*1.1}px">$${Number(o.total).toFixed(2)}</span>
+        </div>
+      </div>`;
+    });
+  }
+
+  return `<div class="h-full flex flex-col" style="background:${bg}">
+    ${userNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-3xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">My Orders</h1>
+        <div class="rounded-2xl p-6" style="background:${sf}">${rows}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============ ADMIN LOGIN ============
+function renderAdminLogin(){
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+  return `<div class="h-full flex items-center justify-center px-4 fade-in" style="background:${getConfig('text_color')}">
+    <div class="w-full max-w-md p-8 rounded-2xl shadow-lg" style="background:${sf}">
+      <div class="text-center mb-6">
+        <div class="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3" style="background:${acc}15"><i data-lucide="shield" class="w-7 h-7" style="color:${acc}"></i></div>
+        <h2 class="font-display font-bold" style="color:${txt};font-size:${bs*1.5}px">Admin Access</h2>
+        <p style="color:${sec};font-size:${bs*.85}px">PIN: 0000</p>
+      </div>
+      <form onsubmit="handleAdminLogin(event)">
+        <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="adm-pin">Admin PIN</label>
+        <input id="adm-pin" type="text" required maxlength="4" class="w-full px-4 py-2.5 rounded-xl border mb-4" style="border-color:${sec}44;font-size:${bs}px" placeholder="Enter admin PIN">
+        <div id="adm-error" class="text-red-500 text-sm mb-3 hidden"></div>
+        <button type="submit" class="w-full py-3 rounded-xl font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Enter Admin Panel</button>
+      </form>
+      <p class="text-center mt-4 cursor-pointer" style="color:${sec};font-size:${bs*.8}px" onclick="navigate('landing')">← Back to home</p>
+    </div>
+  </div>`;
+}
+
+function handleAdminLogin(e){
+  e.preventDefault();
+  const pin=document.getElementById('adm-pin').value.trim();
+  if(pin==='0000'){adminUser=true;showToast('Welcome, Admin!');navigate('admin-dashboard');}
+  else{const el=document.getElementById('adm-error');el.textContent='Invalid PIN.';el.classList.remove('hidden');}
+}
+function logoutAdmin(){adminUser=null;navigate('landing');showToast('Admin logged out');}
+
+// ============ ADMIN DASHBOARD ============
+function renderAdminDashboard(){
+  if(!adminUser)return renderAdminLogin();
+  const products=getProducts(),orders=getOrders(),users=getUsers();
+  const txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),sf=getConfig('surface_color'),bs=getConfig('font_size');
+  const revenue=orders.reduce((s,o)=>s+Number(o.total||0),0);
+
+  const stats=[
+    {icon:'package',label:'Products',val:products.length,color:acc},
+    {icon:'shopping-bag',label:'Orders',val:orders.length,color:'#3b82f6'},
+    {icon:'users',label:'Customers',val:users.length,color:'#8b5cf6'},
+    {icon:'dollar-sign',label:'Revenue',val:'$'+revenue.toFixed(2),color:'#22c55e'}
+  ];
+
+  return `<div class="h-full flex flex-col" style="background:${getConfig('background_color')}">
+    ${adminNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-6xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">Dashboard</h1>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          ${stats.map(s=>`<div class="rounded-2xl p-5" style="background:${sf}">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style="background:${s.color}15"><i data-lucide="${s.icon}" class="w-5 h-5" style="color:${s.color}"></i></div>
+            <p style="color:${sec};font-size:${bs*.8}px">${s.label}</p>
+            <p class="font-bold" style="color:${txt};font-size:${bs*1.5}px">${s.val}</p>
+          </div>`).join('')}
+        </div>
+        <div class="grid lg:grid-cols-2 gap-6">
+          <div class="rounded-2xl p-6" style="background:${sf}">
+            <div class="flex justify-between items-center mb-4">
+              <h2 class="font-semibold" style="color:${txt};font-size:${bs*1.1}px">Recent Orders</h2>
+              <button onclick="navigate('admin-orders')" class="text-sm font-medium" style="color:${acc}">View All →</button>
+            </div>
+            ${orders.slice(0,5).map(o=>`<div class="flex justify-between items-center py-2 border-b" style="border-color:${sec}15">
+              <div><span class="font-medium" style="color:${txt};font-size:${bs*.9}px">${o.order_id}</span><br><span style="color:${sec};font-size:${bs*.75}px">${o.name||o.user_email}</span></div>
+              <span class="font-bold" style="color:${acc}">$${Number(o.total).toFixed(2)}</span>
+            </div>`).join('')||`<p style="color:${sec}" class="text-center py-4">No orders yet</p>`}
+          </div>
+          <div class="rounded-2xl p-6" style="background:${sf}">
+            <div class="flex justify-between items-center mb-4">
+              <h2 class="font-semibold" style="color:${txt};font-size:${bs*1.1}px">Products</h2>
+              <button onclick="navigate('admin-add')" class="text-sm font-medium" style="color:${acc}">+ Add New</button>
+            </div>
+            ${products.slice(0,5).map(p=>`<div class="flex items-center gap-3 py-2 border-b" style="border-color:${sec}15">
+              <span style="font-size:24px">${getEmoji(p.product_name)}</span>
+              <div class="flex-1 min-w-0"><span class="font-medium truncate block" style="color:${txt};font-size:${bs*.9}px">${p.product_name}</span></div>
+              <span class="font-bold" style="color:${acc}">$${Number(p.product_price).toFixed(2)}</span>
+              <button onclick="deleteProduct('${p.__backendId}')" class="p-1 rounded hover:opacity-70" style="color:#ef4444"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+            </div>`).join('')||`<p style="color:${sec}" class="text-center py-4">No products yet</p>`}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function deleteProduct(id){
+  const item=allData.find(d=>d.__backendId===id);
+  if(item){await window.dataSdk.delete(item);showToast('Product deleted');}
+}
+
+// ============ ADMIN ADD PRODUCT ============
+function renderAdminAdd(){
+  if(!adminUser)return renderAdminLogin();
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+  const categories=['Electronics','Clothing','Home & Garden','Sports','Books','Beauty','Toys','Food'];
+
+  return `<div class="h-full flex flex-col" style="background:${getConfig('background_color')}">
+    ${adminNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-2xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">Add New Product</h1>
+        <div class="rounded-2xl p-6" style="background:${sf}">
+          <form onsubmit="handleAddProduct(event)">
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="ap-name">Product Name</label>
+            <input id="ap-name" type="text" required class="w-full px-4 py-2.5 rounded-xl border mb-3" style="border-color:${sec}44;font-size:${bs}px" placeholder="Wireless Headphones">
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="ap-price">Price ($)</label>
+            <input id="ap-price" type="number" step="0.01" min="0" required class="w-full px-4 py-2.5 rounded-xl border mb-3" style="border-color:${sec}44;font-size:${bs}px" placeholder="29.99">
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="ap-cat">Category</label>
+            <select id="ap-cat" required class="w-full px-4 py-2.5 rounded-xl border mb-3" style="border-color:${sec}44;font-size:${bs}px">
+              ${categories.map(c=>`<option value="${c}">${c}</option>`).join('')}
+            </select>
+            <label class="block mb-1 font-medium" style="color:${txt};font-size:${bs*.85}px" for="ap-desc">Description</label>
+            <textarea id="ap-desc" rows="3" class="w-full px-4 py-2.5 rounded-xl border mb-4" style="border-color:${sec}44;font-size:${bs}px" placeholder="Describe the product..."></textarea>
+            <button type="submit" id="ap-btn" class="w-full py-3 rounded-xl font-semibold text-white btn-primary" style="background:${acc};font-size:${bs}px">Add Product</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function handleAddProduct(e){
+  e.preventDefault();
+  if(allData.length>=999){showToast('Storage limit reached','error');return;}
+  const btn=document.getElementById('ap-btn');
+  btn.disabled=true;btn.textContent='Adding...';
+  const r=await window.dataSdk.create({
+    type:'product',
+    product_name:document.getElementById('ap-name').value.trim(),
+    product_price:parseFloat(document.getElementById('ap-price').value),
+    product_category:document.getElementById('ap-cat').value,
+    product_description:document.getElementById('ap-desc').value.trim(),
+    product_image:'',product_id:genId(),
+    name:'',email:'',password:'',role:'',user_email:'',quantity:0,status:'',order_date:'',address:'',phone:'',total:0,order_id:'',items:''
+  });
+  btn.disabled=false;btn.textContent='Add Product';
+  if(r.isOk){showToast('Product added! 🎉');navigate('admin-dashboard');}
+  else showToast('Failed to add','error');
+}
+
+// ============ ADMIN ORDERS ============
+function renderAdminOrders(){
+  if(!adminUser)return renderAdminLogin();
+  const orders=getOrders().sort((a,b)=>new Date(b.order_date)-new Date(a.order_date));
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+
+  let rows='';
+  if(orders.length===0){
+    rows=`<p class="text-center py-12" style="color:${sec}">No orders yet</p>`;
+  } else {
+    rows=`<div class="overflow-x-auto"><table class="w-full text-left" style="font-size:${bs*.9}px">
+      <thead><tr style="color:${sec};border-bottom:2px solid ${sec}22">
+        <th class="pb-3 font-semibold">Order ID</th><th class="pb-3 font-semibold">Customer</th><th class="pb-3 font-semibold">Items</th><th class="pb-3 font-semibold">Total</th><th class="pb-3 font-semibold">Status</th><th class="pb-3 font-semibold">Date</th><th class="pb-3 font-semibold">Action</th>
+      </tr></thead><tbody>
+      ${orders.map(o=>{
+        const sc=o.status==='Confirmed'?'#22c55e':o.status==='Shipped'?'#3b82f6':o.status==='Delivered'?'#8b5cf6':acc;
+        return `<tr style="border-bottom:1px solid ${sec}15">
+          <td class="py-3 font-medium" style="color:${txt}">${o.order_id}</td>
+          <td class="py-3" style="color:${txt}">${o.name||o.user_email}</td>
+          <td class="py-3 max-w-[200px] truncate" style="color:${sec}">${o.items}</td>
+          <td class="py-3 font-bold" style="color:${acc}">$${Number(o.total).toFixed(2)}</td>
+          <td class="py-3"><span class="px-2 py-1 rounded-full text-xs text-white font-medium" style="background:${sc}">${o.status}</span></td>
+          <td class="py-3" style="color:${sec}">${new Date(o.order_date).toLocaleDateString()}</td>
+          <td class="py-3"><select onchange="updateOrderStatus('${o.__backendId}',this.value)" class="px-2 py-1 rounded-lg border text-xs" style="border-color:${sec}44">
+            <option value="Confirmed" ${o.status==='Confirmed'?'selected':''}>Confirmed</option>
+            <option value="Shipped" ${o.status==='Shipped'?'selected':''}>Shipped</option>
+            <option value="Delivered" ${o.status==='Delivered'?'selected':''}>Delivered</option>
+          </select></td>
+        </tr>`;
+      }).join('')}
+      </tbody></table></div>`;
+  }
+
+  return `<div class="h-full flex flex-col" style="background:${getConfig('background_color')}">
+    ${adminNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-6xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">All Orders <span class="text-base font-normal" style="color:${sec}">(${orders.length})</span></h1>
+        <div class="rounded-2xl p-6" style="background:${sf}">${rows}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function updateOrderStatus(id,status){
+  const item=allData.find(d=>d.__backendId===id);
+  if(item){await window.dataSdk.update({...item,status});showToast('Status updated');}
+}
+
+// ============ ADMIN CUSTOMERS ============
+function renderAdminCustomers(){
+  if(!adminUser)return renderAdminLogin();
+  const users=getUsers();
+  const sf=getConfig('surface_color'),txt=getConfig('text_color'),acc=getConfig('primary_action'),sec=getConfig('secondary_action'),bs=getConfig('font_size');
+
+  let rows='';
+  if(users.length===0){
+    rows=`<p class="text-center py-12" style="color:${sec}">No customers yet</p>`;
+  } else {
+    rows=users.map(u=>{
+      const orderCount=getOrders().filter(o=>o.user_email===u.email).length;
+      const totalSpent=getOrders().filter(o=>o.user_email===u.email).reduce((s,o)=>s+Number(o.total||0),0);
+      return `<div class="flex items-center gap-4 p-4 rounded-xl mb-3" style="background:${getConfig('background_color')}">
+        <div class="w-12 h-12 rounded-full flex items-center justify-center font-bold text-white" style="background:${acc};font-size:${bs*1.1}px">${(u.name||'U')[0].toUpperCase()}</div>
+        <div class="flex-1">
+          <h3 class="font-semibold" style="color:${txt};font-size:${bs}px">${u.name}</h3>
+          <p style="color:${sec};font-size:${bs*.8}px">${u.email}</p>
+        </div>
+        <div class="text-right">
+          <p class="font-semibold" style="color:${txt};font-size:${bs*.9}px">${orderCount} orders</p>
+          <p class="font-bold" style="color:${acc};font-size:${bs*.9}px">$${totalSpent.toFixed(2)} spent</p>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  return `<div class="h-full flex flex-col" style="background:${getConfig('background_color')}">
+    ${adminNav()}
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-4xl mx-auto px-4 py-6 fade-in">
+        <h1 class="font-display font-bold mb-6" style="color:${txt};font-size:${bs*1.8}px">Customers <span class="text-base font-normal" style="color:${sec}">(${users.length})</span></h1>
+        <div class="rounded-2xl p-6" style="background:${sf}">${rows}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Initial render
+renderCurrentPage();
+</script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9e30952e92704932',t:'MTc3NDYzNzQ0Ny4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
